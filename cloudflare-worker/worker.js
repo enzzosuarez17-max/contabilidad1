@@ -1,57 +1,61 @@
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type'
+};
+
+function json(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...CORS, 'Content-Type': 'application/json; charset=utf-8' }
+  });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    const headers = cors();
-
-    if (request.method === 'OPTIONS') return new Response(null, { headers });
-
-    if (url.pathname.startsWith('/image/') && request.method === 'GET') {
-      if (!env.BUCKET) return new Response('R2 todavía no está vinculado a este Worker.', { status: 503, headers });
-      const key = decodeURIComponent(url.pathname.slice('/image/'.length));
-      const object = await env.BUCKET.get(key);
-      if (!object) return new Response('Imagen no encontrada', { status: 404, headers });
-      const responseHeaders = new Headers(headers);
-      responseHeaders.set('Content-Type', object.httpMetadata?.contentType || 'image/png');
-      responseHeaders.set('Cache-Control', object.httpMetadata?.cacheControl || 'public, max-age=31536000, immutable');
-      return new Response(object.body, { headers: responseHeaders });
+    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
+    if (request.method === 'GET' && url.pathname === '/health') {
+      return json({ ok: true, github_token: !!env.GITHUB_TOKEN, repo: env.GITHUB_REPO || 'enzzosuarez17-max/contabilidad1' });
     }
-
-    if (url.pathname !== '/upload' || request.method !== 'POST') {
-      return new Response('Not found', { status: 404, headers });
+    if (request.method !== 'POST' || url.pathname !== '/upload') return json({ error: 'Ruta no encontrada' }, 404);
+    if (!env.GITHUB_TOKEN) return json({ error: 'GITHUB_TOKEN no está configurado como secreto de RUNTIME del Worker.' }, 503);
+    const type = (request.headers.get('content-type') || '').toLowerCase();
+    if (!type.startsWith('text/plain')) return json({ error: 'Se esperaba text/plain', received: type }, 415);
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    if (!bytes.length) return json({ error: 'La imagen llegó vacía.' }, 400);
+    if (bytes.length > 8 * 1024 * 1024) return json({ error: 'Imagen demasiado grande. Máximo 8 MB.' }, 413);
+    const repo = env.GITHUB_REPO || 'enzzosuarez17-max/contabilidad1';
+    const date = new Date().toISOString().slice(0, 10);
+    const path = `ejercicios/ejercicio-matematicas-ii-${date}-${Date.now()}.png`;
+    let gh;
+    try {
+      gh = await fetch(`https://api.github.com/repos/${repo}/contents/${path}`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+          Accept: 'application/vnd.github+json',
+          'Content-Type': 'application/json',
+          'User-Agent': 'contabilidad1-pizarra'
+        },
+        body: JSON.stringify({ message: `Guardar ejercicio Matemáticas II ${date}`, content: arrayBufferToBase64(bytes) })
+      });
+    } catch (error) {
+      return json({ error: 'No se pudo conectar con GitHub.', detail: String(error) }, 502);
     }
-
-    if (!env.BUCKET) {
-      return new Response('R2 todavía no está vinculado a este Worker.', { status: 503, headers });
+    const text = await gh.text();
+    if (!gh.ok) {
+      let detail = text;
+      try { detail = JSON.parse(text); } catch {}
+      return json({ error: 'GitHub rechazó la subida.', status: gh.status, detail }, 502);
     }
-
-    const type = request.headers.get('content-type') || '';
-    if (!type.startsWith('image/png')) return new Response('PNG only', { status: 415, headers });
-
-    const body = await request.arrayBuffer();
-    if (body.byteLength > 10 * 1024 * 1024) return new Response('Too large', { status: 413, headers });
-
-    const raw = request.headers.get('x-filename') || `ejercicio-${Date.now()}.png`;
-    const safe = raw.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const key = `ejercicios/${Date.now()}-${safe}`;
-
-    await env.BUCKET.put(key, body, {
-      httpMetadata: {
-        contentType: 'image/png',
-        cacheControl: 'public, max-age=31536000, immutable'
-      }
-    });
-
-    return Response.json({
-      key,
-      url: `${url.origin}/image/${encodeURIComponent(key)}`
-    }, { headers });
+    let data;
+    try { data = JSON.parse(text); } catch { return json({ error: 'Respuesta inválida de GitHub.', detail: text }, 502); }
+    return json({ ok: true, path, url: `https://raw.githubusercontent.com/${repo}/main/${path}`, github: data.content?.html_url || `https://github.com/${repo}/blob/main/${path}` });
   }
 };
-
-function cors() {
-  return {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, X-Filename'
-  };
+function arrayBufferToBase64(bytes) {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + 0x8000, bytes.length)));
+  return btoa(binary);
 }
