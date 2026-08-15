@@ -24,20 +24,15 @@ export default {
     if (!env.GITHUB_TOKEN) return json({ error: 'GITHUB_TOKEN no está disponible en el Worker.' }, 503);
 
     const type = (request.headers.get('content-type') || '').toLowerCase();
-    if (!type.startsWith('multipart/form-data')) return json({ error: 'Se esperaba multipart/form-data', received: type }, 415);
+    if (!type.startsWith('text/plain')) return json({ error: 'Se esperaba text/plain', received: type }, 415);
 
-    const form = await request.formData();
-    const file = form.get('image');
-    const filename = String(form.get('filename') || `ejercicio-${Date.now()}.png`);
-    if (!(file instanceof File)) return json({ error: 'No llegó el campo image.' }, 400);
-
-    const bytes = new Uint8Array(await file.arrayBuffer());
+    const bytes = new Uint8Array(await request.arrayBuffer());
     if (!bytes.length) return json({ error: 'La imagen llegó vacía.' }, 400);
     if (bytes.length > 8 * 1024 * 1024) return json({ error: 'Imagen demasiado grande. Máximo 8 MB.' }, 413);
 
     const repo = env.GITHUB_REPO || 'enzzosuarez17-max/contabilidad1';
-    const safe = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
-    const path = `ejercicios/${Date.now()}-${safe}`;
+    const date = new Date().toISOString().slice(0, 10);
+    const path = `ejercicios/ejercicio-matematicas-ii-${date}-${Date.now()}.png`;
 
     let gh;
     try {
@@ -49,7 +44,7 @@ export default {
           'Content-Type': 'application/json',
           'User-Agent': 'contabilidad1-pizarra'
         },
-        body: JSON.stringify({ message: `Guardar ejercicio: ${safe}`, content: arrayBufferToBase64(bytes) })
+        body: JSON.stringify({ message: `Guardar ejercicio Matemáticas II ${date}`, content: arrayBufferToBase64(bytes) })
       });
     } catch (error) {
       return json({ error: 'No se pudo conectar con GitHub.', detail: String(error) }, 502);
@@ -62,7 +57,8 @@ export default {
       return json({ error: 'GitHub rechazó la subida.', status: gh.status, detail }, 502);
     }
 
-    const data = JSON.parse(text);
+    let data;
+    try { data = JSON.parse(text); } catch { return json({ error: 'Respuesta inválida de GitHub.', detail: text }, 502); }
     return json({ ok: true, path, url: `https://raw.githubusercontent.com/${repo}/main/${path}`, github: data.content?.html_url || `https://github.com/${repo}/blob/main/${path}` });
   }
 };
