@@ -1,0 +1,10 @@
+name = "contabilidad1-drawings"
+main = "src/index.js"
+compatibility_date = "2026-08-15"
+
+[[r2_buckets]]
+binding = "DRAWINGS"
+bucket_name = "contabilidad1-drawings"
+
+[vars]
+PUBLIC_BASE_URL = "https://REEMPLAZAR-CON-TU-DOMINIO-R2"
