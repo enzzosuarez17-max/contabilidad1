@@ -1,0 +1,8 @@
+name = "contabilidad1"
+main = "worker.js"
+compatibility_date = "2026-08-15"
+
+# R2 se vincula desde el panel de Cloudflare después de crear el bucket.
+# [[r2_buckets]]
+# binding = "BUCKET"
+# bucket_name = "contabilidad1-pizarra"
