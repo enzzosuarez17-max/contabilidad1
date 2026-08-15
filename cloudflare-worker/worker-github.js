@@ -12,54 +12,63 @@ function json(body, status = 200) {
 }
 
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     const url = new URL(request.url);
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
 
     if (request.method === 'GET' && url.pathname === '/health') {
-      return json({ ok: true, storage: 'cloudflare-cache' });
+      return json({ ok: true, github_token: !!env.GITHUB_TOKEN, repo: env.GITHUB_REPO || 'enzzosuarez17-max/contabilidad1' });
     }
 
-    if (request.method === 'GET' && url.pathname.startsWith('/image/')) {
-      const key = new Request(url.origin + url.pathname, { method: 'GET' });
-      const cached = await caches.default.match(key);
-      if (!cached) return json({ error: 'Imagen no encontrada o retirada de la caché.' }, 404);
-      const headers = new Headers(cached.headers);
-      headers.set('Access-Control-Allow-Origin', '*');
-      return new Response(cached.body, { status: 200, headers });
-    }
-
-    if (request.method !== 'POST' || url.pathname !== '/upload') {
-      return json({ error: 'Ruta no encontrada' }, 404);
-    }
+    if (request.method !== 'POST' || url.pathname !== '/upload') return json({ error: 'Ruta no encontrada' }, 404);
+    if (!env.GITHUB_TOKEN) return json({ error: 'GITHUB_TOKEN no está disponible en el Worker.' }, 503);
 
     const type = (request.headers.get('content-type') || '').toLowerCase();
-    if (!(type.startsWith('text/plain') || type.startsWith('application/octet-stream') || type.startsWith('image/png'))) {
-      return json({ error: 'Tipo de contenido no permitido', received: type }, 415);
-    }
+    if (!type.startsWith('multipart/form-data')) return json({ error: 'Se esperaba multipart/form-data', received: type }, 415);
 
-    const bytes = await request.arrayBuffer();
-    if (!bytes.byteLength) return json({ error: 'La imagen llegó vacía.' }, 400);
-    if (bytes.byteLength > 25 * 1024 * 1024) return json({ error: 'Imagen demasiado grande.' }, 413);
+    const form = await request.formData();
+    const file = form.get('image');
+    const filename = String(form.get('filename') || `ejercicio-${Date.now()}.png`);
+    if (!(file instanceof File)) return json({ error: 'No llegó el campo image.' }, 400);
 
-    const id = `${Date.now()}-${crypto.randomUUID()}`;
-    const imagePath = `/image/${id}`;
-    const key = new Request(url.origin + imagePath, { method: 'GET' });
-    const response = new Response(bytes, {
-      headers: {
-        'Content-Type': 'image/png',
-        'Cache-Control': 'public, max-age=31536000, immutable',
-        'X-Content-Type-Options': 'nosniff',
-        ...CORS
-      }
-    });
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (!bytes.length) return json({ error: 'La imagen llegó vacía.' }, 400);
+    if (bytes.length > 8 * 1024 * 1024) return json({ error: 'Imagen demasiado grande. Máximo 8 MB.' }, 413);
 
+    const repo = env.GITHUB_REPO || 'enzzosuarez17-max/contabilidad1';
+    const safe = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const path = `ejercicios/${Date.now()}-${safe}`;
+
+    let gh;
     try {
-      await caches.default.put(key, response.clone());
-    } catch (e) {
-      return json({ error: 'No se pudo guardar en Cloudflare Cache', detail: String(e) }, 500);
+      gh = await fetch(`https://api.github.com/repos/${repo}/contents/${path}`, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${env.GITHUB_TOKEN}`,
+          Accept: 'application/vnd.github+json',
+          'Content-Type': 'application/json',
+          'User-Agent': 'contabilidad1-pizarra'
+        },
+        body: JSON.stringify({ message: `Guardar ejercicio: ${safe}`, content: arrayBufferToBase64(bytes) })
+      });
+    } catch (error) {
+      return json({ error: 'No se pudo conectar con GitHub.', detail: String(error) }, 502);
     }
 
-    return json({ ok: true, id, url: `${url.origin}${imagePath}`, storage: 'cloudflare-cache' });
+    const text = await gh.text();
+    if (!gh.ok) {
+      let detail = text;
+      try { detail = JSON.parse(text); } catch {}
+      return json({ error: 'GitHub rechazó la subida.', status: gh.status, detail }, 502);
+    }
+
+    const data = JSON.parse(text);
+    return json({ ok: true, path, url: `https://raw.githubusercontent.com/${repo}/main/${path}`, github: data.content?.html_url || `https://github.com/${repo}/blob/main/${path}` });
   }
 };
+
+function arrayBufferToBase64(bytes) {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, Math.min(i + 0x8000, bytes.length)));
+  return btoa(binary);
+}
